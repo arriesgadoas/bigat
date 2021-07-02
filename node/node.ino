@@ -130,6 +130,7 @@ start:
         }
       }
     standby = true;
+    Serial.println("exiting... reset");
     goto start;
   }
 
