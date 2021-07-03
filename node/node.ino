@@ -1,16 +1,26 @@
 #include <LoRa.h>
 #include <SPI.h>
 
-#define LoRa_SCK 5 
+#define LoRa_SCK 5
 #define LoRa_MISO 19
-#define LoRa_MOSI 27 
-#define LoRa_CS 18    
+#define LoRa_MOSI 27
+#define LoRa_CS 18
 #define LoRa_RST 14
 #define LoRa_IRQ 26
+
+//define task handlers for receive and send packet tasks
+static TaskHandle_t rT = NULL;
+static TaskHandle_t sT = NULL;
+
+//specify cpu core where receive packet task and send packet task will run
+static const BaseType_t core = 1;
 
 //node state variables
 boolean standby = true;
 byte level = 100;
+
+//relay mode time
+unsigned long relayModeTime = 180000;
 
 //node id --> set unique ID for each bigat node; can be saved to EEPROM
 const byte id = 1;
@@ -27,7 +37,60 @@ typedef struct packet {
 //create a packet instance
 struct packet packet_t;
 
-//required LoRa config 
+//RTOS receive task
+void rTask(void *param) {
+  //start timer for relay mode; length of relay mode is deifned by relay mode time
+  unsigned long start = millis();
+  do{
+    //initialize standby to TRUE to enter relay mode
+    standby = true;
+    if(standby == true){
+      Serial.println("waiting for packets...");
+      //when packet is received, standby = FALSE; see receivePacket() function for reference
+      while(standby == true){
+          receivePacket();
+        }
+      }
+
+     //this part only executes when a valid packet is received (standby = false)
+     //check if packet's level is higher since at this point all packet's directions must be downward
+     //(i.e. towards the base station)
+     if (packet_t.level > level) {
+        for (int i = 0; i < 10; i++) {
+          if (packet_t.path[i] == 0) {
+            packet_t.path[i] = id;
+            break;
+          }
+          if (i == 9) {
+            break;
+          }
+        }
+        printPacket();
+        sendPacket();
+      }
+
+      else {
+        Serial.println("ignore low level packet");
+      }
+    }while(millis() - start < relayModeTime);
+
+    Serial.println("exiting... reset");
+    standby = true;
+    esp_restart();
+}
+
+//RTOS send task
+void sTask(void *param) {
+  int rD;
+  //wait for random length of time between zero and the declared relay mode time to send node information (id and level)
+  rD = random(relayModeTime);
+  vTaskDelay(rD / portTICK_PERIOD_MS);
+  //create an id packet that contains the node information (id and level)
+  myPacket(packet_t);
+  sendPacket();
+}
+
+//required LoRa config
 void setupLoRa() {
   Serial.println("setting up Lora...");
   SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
@@ -72,10 +135,10 @@ void sendPacket() {
 
 //print contents of packet_t; only used for debugging
 void printPacket() {
-  Serial.print("id: "); 
+  Serial.print("id: ");
   Serial.print(packet_t.id);
   Serial.print("\t");
-  Serial.print("level: "); 
+  Serial.print("level: ");
   Serial.print(packet_t.level);
   Serial.print("\t");
   Serial.print("path: ");
@@ -89,15 +152,22 @@ void printPacket() {
   }
 }
 
-void setup() {
+//packet containg node information
+void myPacket(struct packet p){
+  p.key = 83;
+  p.command = 1;
+  p.level = level;
+  p.id = id;
+  //set first point of path as own id
+  p.path[0] = id;
+  }
 
+void setup() {
   Serial.begin(115200);
-  delay(1000);
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
   setupLoRa();
   packet_t.path[0] = id;
 
-//reset
-start:
   if (standby == true) {
     //wait for packet until a valid packet is received
     Serial.println("waiting for command packets...");
@@ -105,7 +175,7 @@ start:
       receivePacket();
     }
   }
-  
+
   /**************************************/
   // packet_t.command values
   // 0 ---> test connection
@@ -113,25 +183,25 @@ start:
   // 2 ---> start data logging
   // 3 ---> stop data logging
   /**************************************/
-  
+
   //case 0: node receives test connection packet
   if (packet_t.command == 0) {
-    for(int h = 0; h < 10; h++){
-      if(packet_t.path[h] == id){
-          Serial.println("ignore redundant packet");
-          break;
-        }
-        
-      if(packet_t.path[h] == 0){
-          packet_t.path[h] = id;
-          printPacket();
-          sendPacket();
-          break;
-        }
+    for (int h = 0; h < 10; h++) {
+      if (packet_t.path[h] == id) {
+        Serial.println("ignore redundant packet");
+        break;
       }
+
+      if (packet_t.path[h] == 0) {
+        packet_t.path[h] = id;
+        printPacket();
+        sendPacket();
+        break;
+      }
+    }
     standby = true;
     Serial.println("exiting... reset");
-    goto start;
+    esp_restart();
   }
 
   //case 1: setup command is received
@@ -146,50 +216,20 @@ start:
       printPacket();
       sendPacket();
     }
+    //run parallel tasks to forward packets from other nodes and send own information packet
+    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
+    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, &sT, core);
 
-    //delay relative to level for downward packet success
-    delay((1000 * level)+5000);
-    int randDelay = random(5000);
-    delay(randDelay);
-    //set proper level for reporting to base satation
-    packet_t.level = level;
-    packet_t.id = id;
-    printPacket();
-    sendPacket();
-
-    //3 mins. relay mode for reporting to base station
-    unsigned long start = millis();
-    do {
-      standby = true;
-      if (standby == true) {
-        Serial.println("waiting for node id and level...");
-        while (standby == true && millis() - start < 180000) {
-          receivePacket();
-        }
+    //delete rTask and sTask
+    if(rT != NULL){
+      vTaskDelete(rT);
+      rT == NULL;
       }
 
-      if (packet_t.level > level) {
-        for (int i = 0; i < 10; i++) {
-          if (packet_t.path[i] == 0) {
-            packet_t.path[i] = id;
-            break;
-          }
-          if (i == 9) {
-            break;
-          }
-        }
-        printPacket();
-        sendPacket();
+    if(sT != NULL){
+      vTaskDelete(sT);
+      sT == NULL;
       }
-
-      else{
-        Serial.println("ignore low level packet");
-        }
-    }
-    while (millis() - start < 180000);
-    Serial.println("exiting... reset");
-    standby = true;
-    goto start;
   }
 
   //case 2: start data logging command is received
