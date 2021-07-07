@@ -47,7 +47,7 @@ void rTask(void *param) {
     if(standby == true){
       Serial.println("waiting for packets...");
       //when packet is received, standby = FALSE; see receivePacket() function for reference
-      while(standby == true){
+      while(standby == true && millis() - start < relayModeTime){
           receivePacket();
         }
       }
@@ -74,9 +74,7 @@ void rTask(void *param) {
       }
     }while(millis() - start < relayModeTime);
 
-    Serial.println("exiting... reset");
-    standby = true;
-    esp_restart();
+    vTaskDelete(NULL);
 }
 
 //RTOS send task
@@ -88,6 +86,7 @@ void sTask(void *param) {
   //create an id packet that contains the node information (id and level)
   myPacket(packet_t);
   sendPacket();
+  vTaskDelete(NULL);
 }
 
 //required LoRa config
@@ -220,16 +219,13 @@ void setup() {
     xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
     xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, &sT, core);
 
-    //delete rTask and sTask
-    if(rT != NULL){
-      vTaskDelete(rT);
-      rT == NULL;
-      }
-
-    if(sT != NULL){
-      vTaskDelete(sT);
-      sT == NULL;
-      }
+    //wait for relay mode timne to pass
+    unsigned long s = millis();
+    do{}while(millis() - s < relayModeTime);
+    
+    standby = true;
+    Serial.println("exiting... reset");
+    esp_restart();
   }
 
   //case 2: start data logging command is received
