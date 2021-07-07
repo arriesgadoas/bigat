@@ -167,13 +167,14 @@ void setup() {
   setupLoRa();
   packet_t.path[0] = id;
 
-  if (standby == true) {
-    //wait for packet until a valid packet is received
-    Serial.println("waiting for command packets...");
-    while (standby == true) {
-      receivePacket();
+  reset:
+    if (standby == true) {
+      //wait for packet until a valid packet is received
+      Serial.println("waiting for command packets...");
+      while (standby == true) {
+        receivePacket();
+      }
     }
-  }
 
   /**************************************/
   // packet_t.command values
@@ -200,7 +201,8 @@ void setup() {
     }
     standby = true;
     Serial.println("exiting... reset");
-    esp_restart();
+    //esp_restart();
+    goto reset;
   }
 
   //case 1: setup command is received
@@ -219,13 +221,14 @@ void setup() {
     xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
     xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, &sT, core);
 
-    //wait for relay mode timne to pass
+    //wait for parallel tasks to end... hacky but hey it works!
     unsigned long s = millis();
     do{}while(millis() - s < relayModeTime);
     
     standby = true;
     Serial.println("exiting... reset");
-    esp_restart();
+    //esp_restart();
+    goto reset;
   }
 
   //case 2: start data logging command is received
