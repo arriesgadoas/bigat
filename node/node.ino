@@ -1,6 +1,28 @@
+/**********************************************************
+ * BIGAT node sketch                                      
+ * author: Ali                                           
+ *                                                       
+ * Sketch for BIGAT nodes to establish a mesh network     
+ * by creating node levels (supernodes).                 
+ *                                                       
+ * Utilizes the parallel task capability of ESP32 to     
+ * allow "simultaneous" receiver and transmitter         
+ * mode of the Lora module.                              
+ *                                                       
+ * packet_t.command values
+ * 0 ---> test connection
+ * 1 ---> setup level
+ * 2 ---> start data logging
+ * 3 ---> stop data logging  
+ *                                                     
+ **********************************************************/
+
+//libraries
 #include <LoRa.h>
 #include <SPI.h>
 
+
+//constants
 #define LoRa_SCK 5
 #define LoRa_MISO 19
 #define LoRa_MOSI 27
@@ -8,53 +30,50 @@
 #define LoRa_RST 14
 #define LoRa_IRQ 26
 
-//define task handlers for receive and send packet tasks
-static TaskHandle_t rT = NULL;
-static TaskHandle_t sT = NULL;
 
-//specify cpu core where receive packet task and send packet task will run
-static const BaseType_t core = 1;
+//functions
+void rTask(void *param);          //recieve packet parallel task in relay mode
+void sTask(void *param);          //send packet parallel task in relay mode
+void setupLoRa();                 //setup Lora module's freq, Tx power, SF, etc.
+void receivePacket();             //check if valid packet is received
+void sendPacket();                //send latest packet_t
+void printPacket();               //for debugging purposes
+void myPacket();                  //updates packet_t to contain id and level of this node
 
-//node state variables
-boolean standby = true;
-byte level = 100;
-
-//relay mode time
-unsigned long relayModeTime = 180000;
-
-//node id --> set unique ID for each bigat node; can be saved to EEPROM
-const byte id = 1;
 
 //packet structure definition
 typedef struct packet {
-  byte key;
-  byte command;
-  byte level;
-  byte id;
-  byte path[10];
+  byte key;                       //passkey
+  byte command;                   //0,1,2, or 3
+  byte level;                     //level assigend to a node
+  byte id;                        //node id must be unique
+  byte path[10];                  //track packet path[sorce_node id, 2nd_hop_node id, 3rd_hop_node id,...]
 };
 
-//create a packet instance
+
+//variable declarations
+static TaskHandle_t rT = NULL;
+static TaskHandle_t sT = NULL;
+static const BaseType_t core = 1;
+boolean standby = true;
+byte level = 100;
+unsigned long relayModeTime = 180000;
+const byte id = 1;
 struct packet packet_t;
 
-//RTOS receive task
+
 void rTask(void *param) {
-  //start timer for relay mode; length of relay mode is deifned by relay mode time
   unsigned long start = millis();
   do{
     //initialize standby to TRUE to enter relay mode
     standby = true;
     if(standby == true){
       Serial.println("waiting for packets...");
-      //when packet is received, standby = FALSE; see receivePacket() function for reference
       while(standby == true && millis() - start < relayModeTime){
           receivePacket();
         }
       }
 
-     //this part only executes when a valid packet is received (standby = false)
-     //check if packet's level is higher since at this point all packet's directions must be downward
-     //(i.e. towards the base station)
      if (packet_t.level > level) {
         for (int i = 0; i < 10; i++) {
           if (packet_t.path[i] == 0) {
@@ -77,19 +96,17 @@ void rTask(void *param) {
     vTaskDelete(NULL);
 }
 
-//RTOS send task
+
 void sTask(void *param) {
   int rD;
-  //wait for random length of time between zero and the declared relay mode time to send node information (id and level)
   rD = random(relayModeTime);
   vTaskDelay(rD / portTICK_PERIOD_MS);
-  //create an id packet that contains the node information (id and level)
-  myPacket(packet_t);
+  myPacket();
   sendPacket();
   vTaskDelete(NULL);
 }
 
-//required LoRa config
+
 void setupLoRa() {
   Serial.println("setting up Lora...");
   SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
@@ -107,7 +124,6 @@ void setupLoRa() {
 }
 
 
-//receives packet and checks packet validity by checking network's passkey;
 void receivePacket() {
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
@@ -124,7 +140,7 @@ void receivePacket() {
   }
 }
 
-//send current packet_t
+
 void sendPacket() {
   LoRa.beginPacket();
   LoRa.write((uint8_t*)&packet_t, sizeof(packet_t));
@@ -132,7 +148,7 @@ void sendPacket() {
   Serial.println("packet forwarded");
 }
 
-//print contents of packet_t; only used for debugging
+
 void printPacket() {
   Serial.print("id: ");
   Serial.print(packet_t.id);
@@ -151,15 +167,15 @@ void printPacket() {
   }
 }
 
-//packet containg node information
-void myPacket(struct packet p){
-  p.key = 83;
-  p.command = 1;
-  p.level = level;
-  p.id = id;
-  //set first point of path as own id
-  p.path[0] = id;
+
+void myPacket(){
+  packet_t.key = 83;
+  packet_t.command = 1;
+  packet_t.level = level;
+  packet_t.id = id;
+  packet_t.path[0] = id;
   }
+
 
 void setup() {
   Serial.begin(115200);
@@ -169,22 +185,15 @@ void setup() {
 
   reset:
     if (standby == true) {
-      //wait for packet until a valid packet is received
       Serial.println("waiting for command packets...");
       while (standby == true) {
         receivePacket();
       }
     }
 
-  /**************************************/
-  // packet_t.command values
-  // 0 ---> test connection
-  // 1 ---> setup level
-  // 2 ---> start data logging
-  // 3 ---> stop data logging
-  /**************************************/
+  
 
-  //case 0: node receives test connection packet
+  //case 0: 
   if (packet_t.command == 0) {
     for (int h = 0; h < 10; h++) {
       if (packet_t.path[h] == id) {
@@ -194,59 +203,46 @@ void setup() {
 
       if (packet_t.path[h] == 0) {
         packet_t.path[h] = id;
-        printPacket();
         sendPacket();
         break;
       }
     }
     standby = true;
     Serial.println("exiting... reset");
-    //esp_restart();
     goto reset;
   }
 
-  //case 1: setup command is received
+  //case 1: 
   if (packet_t.command == 1) {
-    //check if sender level is lower than receiver node's level
     if (packet_t.level < level) {
-      //get level of sender then add 1
       level = packet_t.level + 1;
-      //update packet_t's level
       packet_t.level = level;
-      //send packet for other nodes
-      printPacket();
       sendPacket();
     }
-    //run parallel tasks to forward packets from other nodes and send own information packet
     xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
     xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, &sT, core);
 
-    //wait for parallel tasks to end... hacky but hey it works!
     unsigned long s = millis();
     do{}while(millis() - s < relayModeTime);
     
     standby = true;
     Serial.println("exiting... reset");
-    //esp_restart();
     goto reset;
   }
 
-  //case 2: start data logging command is received
+  //case 2:
   if (packet_t.command == 2) {
 
-    //check if sender level is lower than receiver node's level
     if (packet_t.level < level) {
-      //update packet_t's level
       packet_t.level = level;
-      //send start command packet for other nodes
       sendPacket();
-      //start data logging by going to loop function
       Serial.println("start data logger");
       loop();
     }
 
   }
 }
+
 
 void loop() {
 
