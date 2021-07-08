@@ -183,6 +183,9 @@ void setup() {
   setupLoRa();
   packet_t.path[0] = id;
 
+  myPacket();
+  sendPacket();
+
   reset:
     if (standby == true) {
       Serial.println("waiting for command packets...");
@@ -190,8 +193,6 @@ void setup() {
         receivePacket();
       }
     }
-
-  
 
   //case 0: 
   if (packet_t.command == 0) {
