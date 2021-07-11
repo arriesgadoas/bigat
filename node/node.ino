@@ -36,6 +36,9 @@
 #define SD_MOSI 15
 #define SD_CS 13
 
+#define SDA 21
+#define SCL 22
+
 
 //functions
 void rTask(void *param);          //recieve packet parallel task in relay mode
@@ -200,6 +203,10 @@ void myPacket(){
 
 
 void setup() {
+  // fast i2c (400kHz)
+  Wire.begin(SDA, SCL, 400000);
+
+  
   Serial.begin(115200);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
   setupLoRa();
@@ -215,6 +222,14 @@ void setup() {
     return;
   }
 
+  // initialize accelerometer
+  Serial.println("Initializing I2C devices...");
+  accel.initialize();
+
+  // verify connection
+  Serial.println("Testing device connections...");
+  Serial.println(accel.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
+
   // initialize dataFile in write mode
   dataFile = SD.open("/datalog.dat", FILE_WRITE);
   if (!dataFile) {
@@ -222,13 +237,8 @@ void setup() {
   }
 
   // initial data values
-  tsave = millis();
-  myData.tstamp = micros();
-
-  // variables for data logging test; to be deleted later
-  myData.ax = random(32767);
-  myData.ay = random(32767);
-  myData.az = random(32767);
+  tsave = millis();     
+  myData.tstamp = micros();   // one data point every 1ms (or 1000us)
 
   reset:
     if (standby == true) {
@@ -294,20 +304,43 @@ void loop() {
   //put data logging code here
   Serial.println("logging data");
 
-  while (counter < 20000) {
-    myData.tstamp = millis();
-    counter ++;
+  // Datalogging for 10s. Again this is temporary.
+  while (millis() - tsave < 10000) {
+    
+    // Code should be stuck here to ensure that
+    // within 1ms, only one data point is produced
+    while (micros() - myData.tstamp < 1000) {};
+
+    // Line after this is within 1ms
+    myData.tstamp = micros();
+
+    // Getting acceleration from MPU6050 (to be replaced with 9250)
+    accel.getAcceleration(&myData.ax, &myData.ay, &myData.az);
+
+    // Writing data as binary
     dataFile.write((const uint8_t *)&myData, sizeof(myData));
+
+    // New data in dataFile is not saved in txtFile
     saved = false;
   }
 
+  // If data from dataFile is not saved to txtFile
   if (!saved) {
-    dataFile = SD.open("/datalog.dat", FILE_READ);
-    txtFile = SD.open("/txtlog.dat", FILE_WRITE);
 
+    // Opening binary file, now in read mode
+    dataFile = SD.open("/datalog.dat", FILE_READ);
+
+    // Opening txtFile in write mode
+    txtFile = SD.open("/txtlog.txt", FILE_WRITE);
+
+    // Debug to make sure that there are available bytes to 
+    // be read and written
     Serial.println(dataFile.available());
 
+    // To make sure that all bytes will be processed
     while (dataFile.available() > 0) {
+
+      // Converting binary data to respective data type and variable names
       dataFile.read((uint8_t *)&myData, sizeof(myData));
 
       // Saving data as characters in txtFile
