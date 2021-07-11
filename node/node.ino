@@ -20,7 +20,8 @@
 //libraries
 #include <LoRa.h>
 #include <SPI.h>
-
+#include <SD.h>
+#include <FS.h>
 
 //constants
 #define LoRa_SCK 5
@@ -29,6 +30,11 @@
 #define LoRa_CS 18
 #define LoRa_RST 14
 #define LoRa_IRQ 26
+
+#define SD_SCK 14
+#define SD_MISO 2
+#define SD_MOSI 15
+#define SD_CS 13
 
 
 //functions
@@ -50,6 +56,12 @@ typedef struct packet {
   byte path[10];                  //track packet path[sorce_node id, 2nd_hop_node id, 3rd_hop_node id,...]
 };
 
+struct dataStrore {
+  unsigned long tstamp;
+  int16_t ax;
+  int16_t ay;
+  int16_t az;  
+};
 
 //variable declarations
 static TaskHandle_t rT = NULL;
@@ -60,6 +72,16 @@ byte level = 100;
 unsigned long relayModeTime = 180000;
 const byte id = 1;
 struct packet packet_t;
+
+unsigned long tsave;
+File dataFile;        // dataFile for temporary storage (binary)
+File txtFile;         // txtFile for user readable storage
+bool saved = true;    // boolean to check if data is saved to text
+struct dataStore myData;
+
+
+//variables used for data log testing; to be deleted later
+long counter = 0;
 
 
 void rTask(void *param) {
@@ -186,6 +208,28 @@ void setup() {
   myPacket();
   sendPacket();
 
+  // initialize SD Card
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
+  if(!SD.begin(SD_CS)) {
+    Serial.println("card mount failed");
+    return;
+  }
+
+  // initialize dataFile in write mode
+  dataFile = SD.open("/datalog.dat", FILE_WRITE);
+  if (!dataFile) {
+    Serial.print("Failed to open file");
+  }
+
+  // initial data values
+  tsave = millis();
+  myData.tstamp = micros();
+
+  // variables for data logging test; to be deleted later
+  myData.ax = random(32767);
+  myData.ay = random(32767);
+  myData.az = random(32767);
+
   reset:
     if (standby == true) {
       Serial.println("waiting for command packets...");
@@ -250,5 +294,36 @@ void loop() {
   //put data logging code here
   Serial.println("logging data");
 
-  delay(1000);
+  while (counter < 20000) {
+    myData.tstamp = millis();
+    counter ++;
+    dataFile.write((const uint8_t *)&myData, sizeof(myData));
+    saved = false;
+  }
+
+  if (!saved) {
+    dataFile = SD.open("/datalog.dat", FILE_READ);
+    txtFile = SD.open("/txtlog.dat", FILE_WRITE);
+
+    Serial.println(dataFile.available());
+
+    while (dataFile.available() > 0) {
+      dataFile.read((uint8_t *)&myData, sizeof(myData));
+
+      // Saving data as characters in txtFile
+      txtFile.print(myData.tstamp);
+      txtFile.print(",");
+      txtFile.print(myData.ax);
+      txtFile.print(",");
+      txtFile.print(myData.ay);
+      txtFile.print(",");
+      txtFile.print(myData.az);
+      txtFile.print("\n");
+
+      // Debugging to know how many bytes were left to be converted
+      Serial.println(dataFile.available());
+    }
+  }
+
+//  delay(1000);
 }
