@@ -1,4 +1,3 @@
-
 /**********************************************************
  * BIGAT node sketch                                      
  * author: Ali                                           
@@ -32,7 +31,7 @@
 #define LoRa_MISO 19
 #define LoRa_MOSI 27
 #define LoRa_CS 18
-#define LoRa_RST 14
+#define LoRa_RST 12       // changed from 14
 #define LoRa_IRQ 26
 
 #define SD_SCK 14
