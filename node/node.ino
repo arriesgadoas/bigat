@@ -1,3 +1,4 @@
+
 /**********************************************************
  * BIGAT node sketch                                      
  * author: Ali                                           
@@ -22,6 +23,9 @@
 #include <SPI.h>
 #include <SD.h>
 #include <FS.h>
+#include <MPU6050.h>
+#include <I2Cdev.h>
+
 
 //constants
 #define LoRa_SCK 5
@@ -59,7 +63,7 @@ typedef struct packet {
   byte path[10];                  //track packet path[sorce_node id, 2nd_hop_node id, 3rd_hop_node id,...]
 };
 
-struct dataStrore {
+struct dataStore {
   unsigned long tstamp;
   int16_t ax;
   int16_t ay;
@@ -81,6 +85,7 @@ File dataFile;        // dataFile for temporary storage (binary)
 File txtFile;         // txtFile for user readable storage
 bool saved = true;    // boolean to check if data is saved to text
 struct dataStore myData;
+MPU6050 accel;
 
 
 //variables used for data log testing; to be deleted later
