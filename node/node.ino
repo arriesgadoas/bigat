@@ -1,3 +1,5 @@
+
+
 /**********************************************************
  * BIGAT node sketch                                      
  * author: Ali                                           
@@ -31,16 +33,20 @@
 #define LoRa_MISO 19
 #define LoRa_MOSI 27
 #define LoRa_CS 18
-#define LoRa_RST 12       // changed from 14
+#define LoRa_RST 12                // changed from 14
 #define LoRa_IRQ 26
+SPIClass spiLORA(VSPI);
 
 #define SD_SCK 14
 #define SD_MISO 2
 #define SD_MOSI 15
 #define SD_CS 13
+#define SD_speed  27000000
+SPIClass spiSD(HSPI);
 
 #define SDA 21
 #define SCL 22
+
 
 
 //functions
@@ -138,7 +144,8 @@ void sTask(void *param) {
 
 void setupLoRa() {
   Serial.println("setting up Lora...");
-  SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
+//  SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
+  spiLORA.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
 
   LoRa.setPins(LoRa_CS, LoRa_RST, LoRa_IRQ);
 
@@ -207,11 +214,10 @@ void myPacket(){
 
 
 void setup() {
-  // fast i2c (400kHz)
-  Wire.begin(SDA, SCL, 400000);
-
-  
+ 
   Serial.begin(115200);
+  
+ 
   vTaskDelay(1000 / portTICK_PERIOD_MS);
   setupLoRa();
   packet_t.path[0] = id;
@@ -220,11 +226,20 @@ void setup() {
   sendPacket();
 
   // initialize SD Card
-  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
-  if(!SD.begin(SD_CS)) {
+//  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
+
+  spiSD.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if(!SD.begin(SD_CS, spiSD, SD_speed)) {
     Serial.println("card mount failed");
     return;
   }
+
+  else {
+    Serial.print("card mounted");
+  }
+
+   // fast i2c (400kHz)
+  Wire.begin(SDA, SCL, 400000);
 
   // initialize accelerometer
   Serial.println("Initializing I2C devices...");
