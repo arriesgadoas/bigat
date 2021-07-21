@@ -1,5 +1,3 @@
-
-
 /**********************************************************
  * BIGAT node sketch                                      
  * author: Ali                                           
@@ -26,9 +24,13 @@
 #include <FS.h>
 #include <MPU6050.h>
 #include <I2Cdev.h>
+#include <LSM6DSLSensor.h>
+#include <TinyGPS++.h>
+#include <Wire.h>
 
 
-//constants
+// constants
+// LoRA pins
 #define LoRa_SCK 5
 #define LoRa_MISO 19
 #define LoRa_MOSI 27
@@ -37,6 +39,7 @@
 #define LoRa_IRQ 26
 SPIClass spiLORA(VSPI);
 
+// SD Card pins
 #define SD_SCK 14
 #define SD_MISO 2
 #define SD_MOSI 15
@@ -44,8 +47,15 @@ SPIClass spiLORA(VSPI);
 #define SD_speed  27000000
 SPIClass spiSD(HSPI);
 
+// Accelerometer Pins
 #define SDA 21
 #define SCL 22
+
+// NEO-6M GPS, DS3231 (RTC) Pins
+#define RXD1 32
+#define TXD1 33
+#define PPSPIN 35                 // (PPS = pulse per second)
+#define SQWPIN 25                 // DS3231 RTC (SQW = square wave)
 
 
 
