@@ -1,31 +1,11 @@
-
-
-/**********************************************************
- * BIGAT node sketch                                      
- * author: Ali                                           
- *                                                       
- * Sketch for BIGAT nodes to establish a mesh network     
- * by creating node levels (supernodes).                 
- *                                                       
- * Utilizes the parallel task capability of ESP32 to     
- * allow "simultaneous" receiver and transmitter         
- * mode of the Lora module.                              
- *                                                       
- * packet_t.command values
- * 0 ---> test connection
- * 1 ---> setup level
- * 2 ---> start data logging
- * 3 ---> stop data logging  
- *                                                     
- **********************************************************/
-
 //libraries
 #include <LoRa.h>
 #include <SPI.h>
-#include <SD.h>
-#include <FS.h>
-#include <MPU6050.h>
-#include <I2Cdev.h>
+#include "SD.h"
+#include "FS.h"
+#include "Wire.h"
+#include "LSM6DSL.h"
+//#include <TinyGPS++.h>  //https://github.com/mikalhart/TinyGPSPlus
 
 
 //constants
@@ -33,9 +13,9 @@
 #define LoRa_MISO 19
 #define LoRa_MOSI 27
 #define LoRa_CS 18
-#define LoRa_RST 12                // changed from 14
+#define LoRa_RST 23                // changed from 14
 #define LoRa_IRQ 26
-SPIClass spiLORA(VSPI);
+// SPIClasMs spiLORA(VSPI);
 
 #define SD_SCK 14
 #define SD_MISO 2
@@ -47,7 +27,7 @@ SPIClass spiSD(HSPI);
 #define SDA 21
 #define SCL 22
 
-
+LSM6DSL imu(LSM6DSL_MODE_I2C, 0x6B);
 
 //functions
 void rTask(void *param);          //recieve packet parallel task in relay mode
@@ -82,7 +62,7 @@ static const BaseType_t core = 1;
 boolean standby = true;
 byte level = 100;
 unsigned long relayModeTime = 180000;
-const byte id = 1;
+const byte id = 2;
 struct packet packet_t;
 
 unsigned long tsave;
@@ -90,7 +70,6 @@ File dataFile;        // dataFile for temporary storage (binary)
 File txtFile;         // txtFile for user readable storage
 bool saved = true;    // boolean to check if data is saved to text
 struct dataStore myData;
-MPU6050 accel;
 
 
 //variables used for data log testing; to be deleted later
@@ -144,8 +123,8 @@ void sTask(void *param) {
 
 void setupLoRa() {
   Serial.println("setting up Lora...");
-//  SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
-  spiLORA.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
+  SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
+//  spiLORA.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
 
   LoRa.setPins(LoRa_CS, LoRa_RST, LoRa_IRQ);
 
@@ -212,6 +191,11 @@ void myPacket(){
   packet_t.path[0] = id;
   }
 
+void LSM6DSL_getacceldata(){
+  myData.ax = imu.readRawAccelX();
+  myData.ay = imu.readRawAccelY();
+  myData.az = imu.readRawAccelZ();
+}
 
 void setup() {
  
@@ -243,11 +227,8 @@ void setup() {
 
   // initialize accelerometer
   Serial.println("Initializing I2C devices...");
-  accel.initialize();
+  imu.begin();
 
-  // verify connection
-  Serial.println("Testing device connections...");
-  Serial.println(accel.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
 
   // initialize dataFile in write mode
   dataFile = SD.open("/datalog.dat", FILE_WRITE);
@@ -255,8 +236,7 @@ void setup() {
     Serial.print("Failed to open file");
   }
 
-  // initial data values
-  tsave = millis();     
+  // initial data values    
   myData.tstamp = micros();   // one data point every 1ms (or 1000us)
 
   reset:
@@ -291,6 +271,7 @@ void setup() {
     if (packet_t.level < level) {
       level = packet_t.level + 1;
       packet_t.level = level;
+      packet_t.id = id;
       sendPacket();
     }
     xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
@@ -311,14 +292,17 @@ void setup() {
       packet_t.level = level;
       sendPacket();
       Serial.println("start data logger");
-      loop();
+      tsave = millis(); 
+      datalogging();
     }
+    standby = true;
+    goto reset;
 
   }
 }
 
 
-void loop() {
+void datalogging() {
 
   //put data logging code here
   Serial.println("logging data");
@@ -334,7 +318,7 @@ void loop() {
     myData.tstamp = micros();
 
     // Getting acceleration from MPU6050 (to be replaced with 9250)
-    accel.getAcceleration(&myData.ax, &myData.ay, &myData.az);
+    LSM6DSL_getacceldata();
 
     // Writing data as binary
     dataFile.write((const uint8_t *)&myData, sizeof(myData));
@@ -342,6 +326,8 @@ void loop() {
     // New data in dataFile is not saved in txtFile
     saved = false;
   }
+
+  dataFile.close();
 
   // If data from dataFile is not saved to txtFile
   if (!saved) {
@@ -372,10 +358,24 @@ void loop() {
       txtFile.print(myData.az);
       txtFile.print("\n");
 
+      saved = true;
+
       // Debugging to know how many bytes were left to be converted
       Serial.println(dataFile.available());
     }
+
+    dataFile.close();
+    txtFile.close();
   }
 
+  Serial.println("Saving done.");
+//  delay(500);
+//  setup();
 //  delay(1000);
 }
+
+void loop() {
+  Serial.println("LOOP");
+  delay(500);
+}
+
