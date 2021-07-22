@@ -1,25 +1,11 @@
-/**********************************************************
- * BIGAT node sketch                                      
- * author: Ali                                           
- *                                                       
- * Sketch for BIGAT nodes to establish a mesh network     
- * by creating node levels (supernodes).                 
- *                                                       
- * Utilizes the parallel task capability of ESP32 to     
- * allow "simultaneous" receiver and transmitter         
- * mode of the Lora module.                              
- *                                                       
- * packet_t.command values
- * 0 ---> test connection
- * 1 ---> setup level
- * 2 ---> start data logging
- * 3 ---> stop data logging  
- *                                                     
- **********************************************************/
-
 //libraries
 #include <LoRa.h>
 #include <SPI.h>
+#include "SD.h"
+#include "FS.h"
+#include "Wire.h"
+#include "LSM6DSL.h"
+//#include <TinyGPS++.h>  //https://github.com/mikalhart/TinyGPSPlus
 
 
 //constants
@@ -27,9 +13,21 @@
 #define LoRa_MISO 19
 #define LoRa_MOSI 27
 #define LoRa_CS 18
-#define LoRa_RST 14
+#define LoRa_RST 23                // changed from 14
 #define LoRa_IRQ 26
+// SPIClasMs spiLORA(VSPI);
 
+#define SD_SCK 14
+#define SD_MISO 2
+#define SD_MOSI 15
+#define SD_CS 13
+#define SD_speed  27000000
+SPIClass spiSD(HSPI);
+
+#define SDA 21
+#define SCL 22
+
+LSM6DSL imu(LSM6DSL_MODE_I2C, 0x6B);
 
 //functions
 void rTask(void *param);          //recieve packet parallel task in relay mode
@@ -50,6 +48,12 @@ typedef struct packet {
   byte path[10];                  //track packet path[sorce_node id, 2nd_hop_node id, 3rd_hop_node id,...]
 };
 
+struct dataStore {
+  unsigned long tstamp;
+  int16_t ax;
+  int16_t ay;
+  int16_t az;  
+};
 
 //variable declarations
 static TaskHandle_t rT = NULL;
@@ -58,8 +62,18 @@ static const BaseType_t core = 1;
 boolean standby = true;
 byte level = 100;
 unsigned long relayModeTime = 180000;
-const byte id = 1;
+const byte id = 2;
 struct packet packet_t;
+
+unsigned long tsave;
+File dataFile;        // dataFile for temporary storage (binary)
+File txtFile;         // txtFile for user readable storage
+bool saved = true;    // boolean to check if data is saved to text
+struct dataStore myData;
+
+
+//variables used for data log testing; to be deleted later
+long counter = 0;
 
 
 void rTask(void *param) {
@@ -110,6 +124,7 @@ void sTask(void *param) {
 void setupLoRa() {
   Serial.println("setting up Lora...");
   SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
+//  spiLORA.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
 
   LoRa.setPins(LoRa_CS, LoRa_RST, LoRa_IRQ);
 
@@ -176,15 +191,53 @@ void myPacket(){
   packet_t.path[0] = id;
   }
 
+void LSM6DSL_getacceldata(){
+  myData.ax = imu.readRawAccelX();
+  myData.ay = imu.readRawAccelY();
+  myData.az = imu.readRawAccelZ();
+}
 
 void setup() {
+ 
   Serial.begin(115200);
+  
+ 
   vTaskDelay(1000 / portTICK_PERIOD_MS);
   setupLoRa();
   packet_t.path[0] = id;
 
   myPacket();
   sendPacket();
+
+  // initialize SD Card
+//  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
+
+  spiSD.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if(!SD.begin(SD_CS, spiSD, SD_speed)) {
+    Serial.println("card mount failed");
+    return;
+  }
+
+  else {
+    Serial.print("card mounted");
+  }
+
+   // fast i2c (400kHz)
+  Wire.begin(SDA, SCL, 400000);
+
+  // initialize accelerometer
+  Serial.println("Initializing I2C devices...");
+  imu.begin();
+
+
+  // initialize dataFile in write mode
+  dataFile = SD.open("/datalog.dat", FILE_WRITE);
+  if (!dataFile) {
+    Serial.print("Failed to open file");
+  }
+
+  // initial data values    
+  myData.tstamp = micros();   // one data point every 1ms (or 1000us)
 
   reset:
     if (standby == true) {
@@ -218,6 +271,7 @@ void setup() {
     if (packet_t.level < level) {
       level = packet_t.level + 1;
       packet_t.level = level;
+      packet_t.id = id;
       sendPacket();
     }
     xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
@@ -238,17 +292,90 @@ void setup() {
       packet_t.level = level;
       sendPacket();
       Serial.println("start data logger");
-      loop();
+      tsave = millis(); 
+      datalogging();
     }
+    standby = true;
+    goto reset;
 
   }
 }
 
 
-void loop() {
+void datalogging() {
 
   //put data logging code here
   Serial.println("logging data");
 
-  delay(1000);
+  // Datalogging for 10s. Again this is temporary.
+  while (millis() - tsave < 10000) {
+    
+    // Code should be stuck here to ensure that
+    // within 1ms, only one data point is produced
+    while (micros() - myData.tstamp < 1000) {};
+
+    // Line after this is within 1ms
+    myData.tstamp = micros();
+
+    // Getting acceleration from MPU6050 (to be replaced with 9250)
+    LSM6DSL_getacceldata();
+
+    // Writing data as binary
+    dataFile.write((const uint8_t *)&myData, sizeof(myData));
+
+    // New data in dataFile is not saved in txtFile
+    saved = false;
+  }
+
+  dataFile.close();
+
+  // If data from dataFile is not saved to txtFile
+  if (!saved) {
+
+    // Opening binary file, now in read mode
+    dataFile = SD.open("/datalog.dat", FILE_READ);
+
+    // Opening txtFile in write mode
+    txtFile = SD.open("/txtlog.txt", FILE_WRITE);
+
+    // Debug to make sure that there are available bytes to 
+    // be read and written
+    Serial.println(dataFile.available());
+
+    // To make sure that all bytes will be processed
+    while (dataFile.available() > 0) {
+
+      // Converting binary data to respective data type and variable names
+      dataFile.read((uint8_t *)&myData, sizeof(myData));
+
+      // Saving data as characters in txtFile
+      txtFile.print(myData.tstamp);
+      txtFile.print(",");
+      txtFile.print(myData.ax);
+      txtFile.print(",");
+      txtFile.print(myData.ay);
+      txtFile.print(",");
+      txtFile.print(myData.az);
+      txtFile.print("\n");
+
+      saved = true;
+
+      // Debugging to know how many bytes were left to be converted
+      Serial.println(dataFile.available());
+    }
+
+    dataFile.close();
+    txtFile.close();
+  }
+
+  Serial.println("Saving done.");
+//  delay(500);
+//  setup();
+//  delay(1000);
 }
+
+void loop() {
+  Serial.println("LOOP");
+  delay(500);
+}
+
