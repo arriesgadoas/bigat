@@ -714,6 +714,7 @@ void setup() {
       preparing_datagathering(1);
 
       // This will break when a stop request is received
+      // Replace this with command that will stop data gathering via LoRa
       while (!stopGathering()) {
     
         // Will only get data when SQW pulses
