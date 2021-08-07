@@ -30,13 +30,13 @@ SPIClass spiSD(HSPI);
 LSM6DSL imu(LSM6DSL_MODE_I2C, 0x6B);
 
 //functions
-void rTask(void *param);          //recieve packet parallel task in relay mode
-void sTask(void *param);          //send packet parallel task in relay mode
-void setupLoRa();                 //setup Lora module's freq, Tx power, SF, etc.
-void receivePacket();             //check if valid packet is received
-void sendPacket();                //send latest packet_t
-void printPacket();               //for debugging purposes
-void myPacket();                  //updates packet_t to contain id and level of this node
+//void rTask(void *param);          //recieve packet parallel task in relay mode
+//void sTask(void *param);          //send packet parallel task in relay mode
+//void setupLoRa();                 //setup Lora module's freq, Tx power, SF, etc.
+//void receivePacket();             //check if valid packet is received
+//void sendPacket();                //send latest packet_t
+//void printPacket();               //for debugging purposes
+//void myPacket(int m);                  //updates packet_t to contain id and level of this node
 
 
 //packet structure definition
@@ -52,7 +52,7 @@ struct dataStore {
   unsigned long tstamp;
   int16_t ax;
   int16_t ay;
-  int16_t az;  
+  int16_t az;
 };
 
 //variable declarations
@@ -61,7 +61,7 @@ static TaskHandle_t sT = NULL;
 static const BaseType_t core = 1;
 boolean standby = true;
 byte level = 100;
-unsigned long relayModeTime = 180000;
+unsigned long relayModeTime = 5000;
 const byte id = 2;
 struct packet packet_t;
 
@@ -78,53 +78,60 @@ long counter = 0;
 
 void rTask(void *param) {
   unsigned long start = millis();
-  do{
+  do {
     //initialize standby to TRUE to enter relay mode
     standby = true;
-    if(standby == true){
+    if (standby == true) {
       Serial.println("waiting for packets...");
-      while(standby == true && millis() - start < relayModeTime){
-          receivePacket();
+      while (standby == true && millis() - start < relayModeTime) {
+        receivePacket();
+      }
+    }
+
+    if (packet_t.level > level) {
+      for (int i = 0; i < 10; i++) {
+        if (packet_t.path[i] == 0) {
+          packet_t.path[i] = id;
+          break;
+        }
+        if (i == 9) {
+          break;
         }
       }
+      printPacket();
+      sendPacket();
+    }
 
-     if (packet_t.level > level) {
-        for (int i = 0; i < 10; i++) {
-          if (packet_t.path[i] == 0) {
-            packet_t.path[i] = id;
-            break;
-          }
-          if (i == 9) {
-            break;
-          }
-        }
-        printPacket();
-        sendPacket();
-      }
+    else {
+      Serial.println("ignore low level packet");
+    }
+  } while (millis() - start < relayModeTime);
 
-      else {
-        Serial.println("ignore low level packet");
-      }
-    }while(millis() - start < relayModeTime);
-
-    vTaskDelete(NULL);
+  vTaskDelete(NULL);
 }
+
+
 
 
 void sTask(void *param) {
   int rD;
   rD = random(relayModeTime);
   vTaskDelay(rD / portTICK_PERIOD_MS);
-  myPacket();
+  myPacket(1);
   sendPacket();
+  delay(1000);
   vTaskDelete(NULL);
+}
+
+void stopReadTask(void *param) {
+
 }
 
 
 void setupLoRa() {
   Serial.println("setting up Lora...");
   SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
-//  spiLORA.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
+  //  spiLORA.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_CS);
 
   LoRa.setPins(LoRa_CS, LoRa_RST, LoRa_IRQ);
 
@@ -164,6 +171,7 @@ void sendPacket() {
 }
 
 
+
 void printPacket() {
   Serial.print("id: ");
   Serial.print(packet_t.id);
@@ -183,37 +191,38 @@ void printPacket() {
 }
 
 
-void myPacket(){
+void myPacket(int m) {
   packet_t.key = 83;
-  packet_t.command = 1;
+  packet_t.command = m;
   packet_t.level = level;
   packet_t.id = id;
   packet_t.path[0] = id;
-  }
+}
 
-void LSM6DSL_getacceldata(){
+void LSM6DSL_getacceldata() {
   myData.ax = imu.readRawAccelX();
   myData.ay = imu.readRawAccelY();
   myData.az = imu.readRawAccelZ();
 }
 
 void setup() {
- 
+
   Serial.begin(115200);
-  
- 
+
+
   vTaskDelay(1000 / portTICK_PERIOD_MS);
   setupLoRa();
+  packet_t.id = id;
   packet_t.path[0] = id;
 
-  myPacket();
+  myPacket(0);
   sendPacket();
 
   // initialize SD Card
-//  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
+  //  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
 
   spiSD.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  if(!SD.begin(SD_CS, spiSD, SD_speed)) {
+  if (!SD.begin(SD_CS, spiSD, SD_speed)) {
     Serial.println("card mount failed");
     return;
   }
@@ -222,7 +231,7 @@ void setup() {
     Serial.print("card mounted");
   }
 
-   // fast i2c (400kHz)
+  // fast i2c (400kHz)
   Wire.begin(SDA, SCL, 400000);
 
   // initialize accelerometer
@@ -236,18 +245,20 @@ void setup() {
     Serial.print("Failed to open file");
   }
 
-  // initial data values    
+  // initial data values
   myData.tstamp = micros();   // one data point every 1ms (or 1000us)
 
-  reset:
-    if (standby == true) {
-      Serial.println("waiting for command packets...");
-      while (standby == true) {
-        receivePacket();
-      }
+reset:
+  standby = true;
+  if (standby == true) {
+    Serial.println("waiting for command packets...");
+    while (standby == true) {
+      receivePacket();
     }
+  }
 
-  //case 0: 
+  Serial.print("received command: "); Serial.println(packet_t.command);
+  //case 0:
   if (packet_t.command == 0) {
     for (int h = 0; h < 10; h++) {
       if (packet_t.path[h] == id) {
@@ -261,27 +272,29 @@ void setup() {
         break;
       }
     }
-    standby = true;
+    //standby = true;
     Serial.println("exiting... reset");
     goto reset;
   }
 
-  //case 1: 
+  //case 1:
   if (packet_t.command == 1) {
     if (packet_t.level < level) {
       level = packet_t.level + 1;
       packet_t.level = level;
       packet_t.id = id;
       sendPacket();
-    }
-    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
-    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, &sT, core);
 
-    unsigned long s = millis();
-    do{}while(millis() - s < relayModeTime);
-    
-    standby = true;
-    Serial.println("exiting... reset");
+      xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, &rT, core);
+      xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 2, &sT, core);
+
+      unsigned long s = millis();
+      do {} while ((millis() - s) < (relayModeTime + 5000));
+    }
+
+
+    //standby = true;
+    Serial.println("exiting... resetxxx");
     goto reset;
   }
 
@@ -289,13 +302,13 @@ void setup() {
   if (packet_t.command == 2) {
 
     if (packet_t.level < level) {
-      packet_t.level = level;
+      packet_t.level = level + 1;
       sendPacket();
       Serial.println("start data logger");
-      tsave = millis(); 
+      tsave = millis();
       datalogging();
     }
-    standby = true;
+    //standby = true;
     goto reset;
 
   }
@@ -309,7 +322,7 @@ void datalogging() {
 
   // Datalogging for 10s. Again this is temporary.
   while (millis() - tsave < 10000) {
-    
+
     // Code should be stuck here to ensure that
     // within 1ms, only one data point is produced
     while (micros() - myData.tstamp < 1000) {};
@@ -338,7 +351,7 @@ void datalogging() {
     // Opening txtFile in write mode
     txtFile = SD.open("/txtlog.txt", FILE_WRITE);
 
-    // Debug to make sure that there are available bytes to 
+    // Debug to make sure that there are available bytes to
     // be read and written
     Serial.println(dataFile.available());
 
@@ -369,13 +382,9 @@ void datalogging() {
   }
 
   Serial.println("Saving done.");
-//  delay(500);
-//  setup();
-//  delay(1000);
 }
 
 void loop() {
   Serial.println("LOOP");
   delay(500);
 }
-

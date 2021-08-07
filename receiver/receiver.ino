@@ -18,15 +18,17 @@ typedef struct packet {
   byte path[10];                  //track packet path[sorce_node id, 2nd_hop_node id, 3rd_hop_node id,...]
 };
 
-
 struct packet packet_t;
-
 
 int id;
 int level;
+int command;
+int path[10];
+String commandS;
 
 void setupLora() {
   // Very important for SPI pin configuration!
+  Serial.println("Setting up LoRa");
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
 
   // Very important for LoRa Radio pin configuration!
@@ -40,14 +42,14 @@ void setupLora() {
 
   LoRa.setSpreadingFactor(12);
   LoRa.setTxPower(20, PA_OUTPUT_PA_BOOST_PIN);
-}
 
+  Serial.println("Setup LoRa done.");
+}
 
 void sendPacket() {
   LoRa.beginPacket();
   LoRa.write((uint8_t*)&packet_t, sizeof(packet_t));
   LoRa.endPacket();
-  Serial.println("packet forwarded");
 }
 
 void createCommandPacket(int c, int l) {
@@ -60,38 +62,21 @@ void createCommandPacket(int c, int l) {
   packet_t.path[0] = 0;
 }
 
-
-/**********************************************************
- * BIGAT node sketch                                      
- * author: Ali                                           
- *                                                       
- * Sketch for BIGAT nodes to establish a mesh network     
- * by creating node levels (supernodes).                 
- *                                                       
- * Utilizes the parallel task capability of ESP32 to     
- * allow "simultaneous" receiver and transmitter         
- * mode of the Lora module.                              
- *                                                       
- * packet_t.command values
- * 0 ---> test connection
- * 1 ---> setup level
- * 2 ---> start data logging
- * 3 ---> stop data logging  
- *                                                     
- **********************************************************/
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
   delay(1000);
   setupLora();
 
-  createCommandPacket(2, 0);
+  //xTaskCreatePinnedToCore(readSerAndSend, "serial input command", 1024, NULL, 1, &serInput, 1);
+  createCommandPacket(1,0);
   sendPacket();
 }
 
 
 void loop() {
   // put your main code here, to run repeatedly:
+  
   int packetSize = LoRa.parsePacket ();
   if (packetSize) // Only read if there is some data to read..
   {
@@ -99,10 +84,22 @@ void loop() {
     if (packet_t.key = 83) {
       id = packet_t.id;
       level = packet_t.level;
-      Serial.print("id: \t");
-      Serial.println(id);
-      Serial.print("level: \t");
-      Serial.println(level);
+      command = packet_t.command;
+      if(command == 0){
+          Serial.print("Node ");Serial.print(id);Serial.println(" now connected");
+        }
+      else if (command == 1){
+          Serial.print("id: \t");
+          Serial.println(id);
+          Serial.print("level: \t");
+          Serial.println(level);
+          Serial.print("path: \t");
+          for(int i=0; i<10; i++){
+              path[i] = packet_t.path[i];
+              Serial.print(path[i]);Serial.print(":");
+            }
+          Serial.print("\n");
+        }
       
     }
   }
