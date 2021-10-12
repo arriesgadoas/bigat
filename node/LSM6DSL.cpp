@@ -203,7 +203,7 @@ void LSM6DSL::initSettings() {
     settings.accelEnabled = 1;
     settings.accelODROff = 1;
     settings.accelRange = 2;
-    settings.accelSampleRate = 1660;
+    settings.accelSampleRate = 833;
     settings.accelBandWidth = 100;
     settings.accelFifoEnabled = 0;
     settings.accelFifoDecimation = 0;
@@ -353,6 +353,14 @@ int16_t LSM6DSL::readRawAccelZ() {
     readRegisterInt16(&result, LSM6DSL_ACC_GYRO_OUTZ_L_XL_REG);
 
     return result;
+}
+
+void LSM6DSL::readRawAccel3D(int16_t* x, int16_t* y, int16_t* z) {
+    uint8_t buffer[6];
+    lsm6dsl_status_t returnStatus = readRegisterRegion(buffer, LSM6DSL_ACC_GYRO_OUTX_L_XL_REG, 6);
+    *x = (int16_t)buffer[0] | (int16_t)buffer[1] << 8;
+    *y = (int16_t)buffer[2] | (int16_t)buffer[3] << 8;
+    *z = (int16_t)buffer[4] | (int16_t)buffer[5] << 8;
 }
 
 float LSM6DSL::readFloatAccelX() {
