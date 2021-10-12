@@ -97,6 +97,8 @@ public:
     int16_t readRawAccelY();
     int16_t readRawAccelZ();
 
+    void readRawAccel3D(int16_t* x, int16_t* y, int16_t* z);
+
     int16_t readRawGyroX();
     int16_t readRawGyroY();
     int16_t readRawGyroZ();
