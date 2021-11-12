@@ -8,7 +8,7 @@
 #define LORA_MOSI 27    // GPIO27 -  SX1276 MOSI
 #define LORA_CS 18     // GPIO18 -   SX1276 CS
 #define LORA_RST 14   // GPIO14 -    SX1276 RST
-#define LORA_IRQ 26  // GPIO26 -     SX1276 IRQ (interrupt request)U
+#define LORA_IRQ 26  // GPIO26 -     SX1276 IRQ (interrupt request)
 
 typedef struct packet {
   byte key;                       //passkey
