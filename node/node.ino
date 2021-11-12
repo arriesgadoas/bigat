@@ -1,3 +1,5 @@
+const byte id = 12;
+
 //libraries
 #include <LoRa.h>
 #include <SPI.h>
@@ -6,6 +8,8 @@
 #include "Wire.h"
 #include "LSM6DSL.h"
 #include <TinyGPS++.h>  //https://github.com/mikalhart/TinyGPSPlus
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 //constants
 #define LoRa_SCK 5
@@ -18,6 +22,12 @@
 // For I2C devices (accelerometer, RTC)
 #define SDA 21
 #define SCL 22
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 #define RXD1 36   // For NEO-6M GPS
 #define TXD1 39   // For NEO-6M GPS
@@ -32,11 +42,16 @@
 #define RTC_SQW_1024HZ 0x08
 #define RTC_SQW_4096HZ 0x10
 
+#define ONE_BIT_MODE false
+
 // LSM6DSL interface
 LSM6DSL imu(LSM6DSL_MODE_I2C, 0x6B);
 
 // GPS interface
 TinyGPSPlus gps;
+
+TaskHandle_t StopTask;
+TaskHandle_t SdSaving;
 
 //functions
 void rTask(void *param);          //recieve packet parallel task in relay mode
@@ -98,6 +113,7 @@ struct peakAccel {
   int16_t ay;
   int16_t az;
   int32_t mag;
+  double mag_calc;
 };
 
 int32_t current_mag;
@@ -110,7 +126,7 @@ boolean standby = true;
 boolean logger = true;
 byte level = 100;
 unsigned long relayModeTime = 10000;
-const byte id = 3;
+//const byte id = 3;
 struct packet packet_t;
 byte key = 83;
 byte key2 = 84;
@@ -138,14 +154,23 @@ struct peakAccel pgaData;
 struct peakAccel pgaDataOtherNodes;
 
 // Variables for SD buffer
-const int sdBufSize = 16;
+const int sdBufSize = 128;
 struct dataStore toSD[2][sdBufSize];
-uint8_t toSD_arrayCount = 0;
+uint16_t toSD_arrayCount = 0;
 bool toSD_arrayFull = false;
 bool toSD_arrayChange = false;
 bool toSD_arrayFull_copy;
 
 bool isBackground;
+bool noGPSdata = true;
+bool LEDstate = true;
+
+int keep_up = 10;
+int keep_up_core = 100;
+int sps = 256;
+int samp_per = 1024 / sps;
+
+const double accel_res = 1000.0 / double(pow(2,14));
 
 
 void rTask(void *param) {
@@ -202,6 +227,7 @@ void rPeakTask(void *param) {
       Serial.println("waiting for packets...");
       while (standby == true && millis() - start < relayModeTime) {
         receivePeakPacket();
+        delay(1);
       }
     }
 
@@ -242,6 +268,24 @@ void sPeakTask(void *param) {
 
 void stopTask(void *param) {
   while (1) {
+//    if (toSD_arrayChange != toSD_arrayFull) {
+//      for (int i=0; i<sdBufSize; i++) {
+//        dataFile.write((const uint8_t *)&toSD[toSD_arrayChange][i], sizeof(toSD[toSD_arrayChange][i]));
+//      }
+//      dataFile.flush();
+//      toSD_arrayChange = !toSD_arrayChange;
+//    }
+//    else {
+//      receivePacket();
+//      if (packet_t.level < level) {
+//        if (packet_t.command == 3) {
+//          packet_t.level = level;
+//          sendPacket();
+//          logger = false;
+//          break;
+//        }
+//      }
+//    }
     receivePacket();
     if (packet_t.level < level) {
       if (packet_t.command == 3) {
@@ -251,18 +295,17 @@ void stopTask(void *param) {
         break;
       }
     }
-    if (toSD_arrayChange != toSD_arrayFull) {
-      Serial.println();
-      Serial.println("SD");
-      for (int i=0; i<sdBufSize; i++) {
-        dataFile.write((const uint8_t *)&toSD[toSD_arrayChange][i], sizeof(toSD[toSD_arrayChange][i]));
-      }
-      dataFile.flush();
-      toSD_arrayChange = !toSD_arrayChange;
-    }
-    vTaskDelay(30 / portTICK_PERIOD_MS);
+    delayMicroseconds(keep_up_core);
   }
   
+  vTaskDelete(NULL);
+}
+
+void savetoSD( void * parameter ) {
+  for (int i=0; i<sdBufSize; i++) {
+    dataFile.write((const uint8_t *)&toSD[*((bool*)parameter)][i], sizeof(toSD[*((bool*)parameter)][i]));
+  }
+  dataFile.flush();
   vTaskDelete(NULL);
 }
 
@@ -406,7 +449,7 @@ void SQW_init() {
 }
 
 // Detect if SQW of DS3231 pulses or not
-void detect_SQW() {
+void IRAM_ATTR detect_SQW() {
   sqw_count--;
 }
 
@@ -463,31 +506,56 @@ void displayInfo()
 
 // Wait for valid location from GPS
 void wait_for_GPS_location() {
-  while (!gps.location.isValid()) {
-    while (Serial1.available() > 0) {
-      if (gps.encode(Serial1.read())) {
-        displayInfo();
+  String gps_display;
+//  OLED_display("Getting GPS Data");
+  if (noGPSdata) {
+    do {
+      bool will_display = false;
+      while (Serial1.available() > 0) {
+        if (gps.encode(Serial1.read())) {
+          displayInfo();
+          will_display = true;
+        }
+        if (will_display) {
+          gps_display = "Getting GPS Data\n";
+          gps_display += String(gps.location.lat()) + ",";
+          gps_display += String(gps.location.lng()) + ",";
+          gps_display += String(gps.altitude.value()) + "\n";
+          gps_display += String(gps.date.year()) + "/";
+          gps_display += String(gps.date.month()) + "/";
+          gps_display += String(gps.date.day()) + " | ";
+          gps_display += String(gps.time.hour()) + ":";
+          gps_display += String(gps.time.minute()) + ":";
+          gps_display += String(gps.time.second()) + "\n";
+          gps_display += "Satellite #: " + String(gps.satellites.value());
+          OLED_display(gps_display);
+          will_display = false;
+        }
       }
+    } while (!gps.location.isValid() || (gps.altitude.value() <= 0 || gps.altitude.value() > 500000));
+    
+    while (Serial1.available() > 0) {
+      gps.encode(Serial1.read());
     }
+    gpsData.lat = gps.location.lat();
+    gpsData.lng = gps.location.lng();
+    gpsData.alt = gps.altitude.value();
+    if (gps.location.isValid()) { noGPSdata = false; }
+  
+    // Debugging purposes
+    Serial.print("GPS DONE: ");
+    Serial.print(gpsData.lat, 8);
+    Serial.print(",");
+    Serial.print(gpsData.lng, 8);
+    Serial.print(" | Alt (cm): ");
+    Serial.println(gpsData.alt, 8);
+
+    gps_display = "GPS DONE";
+    gps_display += String(gpsData.lat, 8) + ",";
+    gps_display += String(gpsData.lng, 8) + ",";
+    gps_display += String(gpsData.alt, 8);
+    OLED_display(gps_display);
   }
-
-  // 5 seconds of delay alloted for location to relax
-  delay(5000);
-  while (Serial1.available() > 0) {
-    gps.encode(Serial1.read());
-  }
-  gpsData.lat = gps.location.lat();
-  gpsData.lng = gps.location.lng();
-  gpsData.alt = gps.altitude.value();
-
-  // Debugging purposes
-  Serial.print("GPS DONE: ");
-  Serial.print(gpsData.lat, 8);
-  Serial.print(",");
-  Serial.print(gpsData.lng, 8);
-  Serial.print(" | Alt (cm): ");
-  Serial.println(gpsData.alt, 8);
-
 }
 
 // GPS PPS. Ticks every 1 second and is synchronized for every GPS with typical difference of < 10ms.
@@ -509,8 +577,12 @@ int32_t calculate_mag(int32_t ax, int32_t ay, int32_t az) {
 // Preparing data gathering
 void preparing_datagathering(int filetype) {
 
-  detachInterrupt(digitalPinToInterrupt(SQWPIN));
+  detachInterrupt(SQWPIN);
   sqw_count = 0;
+
+  memset(toSD, 0, sizeof(toSD));
+  toSD_arrayCount = 0;
+  toSD_arrayFull = false;
   
   // Getting latest GPS data for time and date
   while (Serial1.available() > 0) {
@@ -558,17 +630,9 @@ void preparing_datagathering(int filetype) {
   sendRTC(RTC_CONTROL,RTC_SQW_1024HZ);          // Making DS3231 generate 1024 Hz SQW
   accelData.tstamp = 0;                         // Resetting timestamp
   Serial.println("RTC CONFIG");
-  attachInterrupt(digitalPinToInterrupt(SQWPIN), detect_SQW, FALLING);
+  attachInterrupt(SQWPIN, detect_SQW, FALLING);
   
   while (!PPS_tick()) {};         // After this, data gathering starts
-}
-
-void savetoSD( void * parameter ) {
-  for (int i=0; i<sdBufSize; i++) {
-    dataFile.write((const uint8_t *)&toSD[*((bool*)parameter)][i], sizeof(toSD[*((bool*)parameter)][i]));
-  }
-  dataFile.flush();
-  vTaskDelete(NULL);
 }
 
 bool get_data() {
@@ -583,17 +647,19 @@ bool get_data() {
   LSM6DSL_getacceldata();
 
   toSD[toSD_arrayFull][toSD_arrayCount] = accelData;
-  if (accelData.tstamp >= 254) {
+  if (accelData.tstamp >= (sps-1)) {
     Serial.println(accelData.tstamp);
   }
 
   toSD_arrayCount++;
   
   if (toSD_arrayCount >= sdBufSize) {
-    if (isBackground) {
-      toSD_arrayFull_copy = toSD_arrayFull;
-      xTaskCreatePinnedToCore(savetoSD, "save to SD card", 8096, (void*)&toSD_arrayFull_copy, 1, NULL, 0);
-    }
+//    if (isBackground) {
+//      toSD_arrayFull_copy = toSD_arrayFull;
+//      xTaskCreatePinnedToCore(savetoSD, "save to SD card", 8096, (void*)&toSD_arrayFull_copy, 5, NULL, 0);
+//    }
+    toSD_arrayFull_copy = toSD_arrayFull;
+    xTaskCreatePinnedToCore(savetoSD, "save to SD card", 8096, (void*)&toSD_arrayFull_copy, 1, &SdSaving, 0);
     toSD_arrayCount = 0;
     toSD_arrayFull = !toSD_arrayFull;
   }
@@ -606,14 +672,14 @@ bool get_data() {
 }
 
 bool saving_data(int filetype) {
-  detachInterrupt(digitalPinToInterrupt(SQWPIN));
+  detachInterrupt(SQWPIN);
   if (!saved) {
 
     // Opening binary file, now in read mode
     dataFile = SD_MMC.open(filename+".dat", FILE_READ);
 
     // Opening txtFile in write mode
-    txtFile = SD_MMC.open(filename+".txt", FILE_WRITE);
+    txtFile = SD_MMC.open(filename+".csv", FILE_WRITE);
 
     // Debug to make sure that there are available bytes to 
     // be read and written
@@ -626,6 +692,7 @@ bool saving_data(int filetype) {
     txtFile.print(gpsData.alt); txtFile.print(",");
     txtFile.print(gpsData.date); txtFile.print(",");
     txtFile.print(gpsData.time); txtFile.print("\n");
+    txtFile.print("\n");
 
     if (filetype == 1) {
       pgaData.lat = gpsData.lat;
@@ -635,10 +702,14 @@ bool saving_data(int filetype) {
       pgaData.time = gpsData.time;
     }
 
+    txtFile.print("RawTimestamp, RawX, RawY, RawZ, ");
+    txtFile.print("Timestamp, Ax (mg), Ay (mg), Az (mg)"); txtFile.print("\n");
     
     Serial.print("Bytes to be written: ");
     uint32_t file_size = dataFile.available();
     unsigned long time_saving = millis();
+    unsigned long tstamp_calc = 0;
+    
     // To make sure that all bytes will be processed
     while (dataFile.available() > 0) {
 
@@ -649,8 +720,14 @@ bool saving_data(int filetype) {
       txtFile.print(accelData.tstamp); txtFile.print(",");
       txtFile.print(accelData.ax); txtFile.print(",");
       txtFile.print(accelData.ay); txtFile.print(",");
-      txtFile.print(accelData.az); txtFile.print("\n");
+      txtFile.print(accelData.az); txtFile.print(",");
+      txtFile.print(double(tstamp_calc / double(sps)), 10); txtFile.print(",");
+      txtFile.print(accelData.ax * accel_res, 10); txtFile.print(",");
+      txtFile.print(accelData.ay * accel_res, 10); txtFile.print(",");
+      txtFile.print(accelData.az * accel_res, 10); txtFile.print("\n");
 
+      tstamp_calc++;
+      
       if (filetype == 0) {
         backgroundData.count += 1;
         backgroundData.ax += accelData.ax;
@@ -672,29 +749,37 @@ bool saving_data(int filetype) {
 
       if ((unsigned long)(millis() - time_saving) > 1000) {
         time_saving = millis();
-        Serial.print("Saving data: "); 
-        Serial.print(100 - (int)((dataFile.available() * 100.0) / (file_size * 1.0))); Serial.print("% \t\t");
-        Serial.print(file_size - dataFile.available()); Serial.print(" out of "); Serial.println(file_size);
+        int saving_progress = 100 - (int)((dataFile.available() * 100.0) / (file_size * 1.0));
+        String saving_display = "Saving data: ";
+        saving_display += String(saving_progress) + "% \n";
+        saving_display += String(file_size - dataFile.available());
+        saving_display += " out of ";
+        saving_display += String(file_size) + "\n\n";
+        Serial.print(saving_display);
+        OLED_display(saving_display);
       }
     }
     Serial.println("Saving data: 100%");
+    OLED_display("Saving data: 100%");
     if (filetype == 1) {
       pgaData.b_ax = backgroundData.ax;
       pgaData.b_ay = backgroundData.ay;
       pgaData.b_az = backgroundData.az;
+
+      pgaData.mag_calc = double(pgaData.mag) * accel_res;
       
-      Serial.print("Background: ");
+      Serial.print("Raw Background: ");
       Serial.print(backgroundData.ax); Serial.print(", ");
       Serial.print(backgroundData.ay); Serial.print(", ");
       Serial.println(backgroundData.az);
       
-      Serial.print("PGA:");
+      Serial.print("Raw Peak:");
       Serial.print(pgaData.ax); Serial.print(", ");
       Serial.print(pgaData.ay); Serial.print(", ");
       Serial.println(pgaData.az);
 
       Serial.print("DISP: ");
-      Serial.println(pgaData.mag);
+      Serial.println(pgaData.mag_calc, 10);
     }
   }
 
@@ -702,7 +787,9 @@ bool saving_data(int filetype) {
   txtFile.close();    // Flushing data to txtfile
 
   Serial.print("Saving done! Filename: ");   // For debugging purposes
-  Serial.print(filename); Serial.println(".txt");
+  Serial.print(filename); Serial.println(".csv");
+
+  delay(3000);
 }
 
 void process_background() {
@@ -717,20 +804,40 @@ void get_background_data() {
   isBackground = true;
   
   preparing_datagathering(0);
-  while (num_ticks < 5) {
-    Serial.print(".");
+  while (num_ticks < 10) {
     if (sqw_count <= 0) {
-      sqw_count = 4;
+      sqw_count = samp_per;
       num_ticks += get_data();
     }
+    delayMicroseconds(keep_up);
   }
   isBackground = false;
-  
+
+  delay(5000);
   dataFile.close();
   Serial.println("Saving background data...");
   saving_data(0);
   process_background();
   Serial.println("Done: background data");
+}
+
+void OLED_init() {
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);             // Normal 1:1 pixel scale
+  display.setTextColor(WHITE);        // Draw white text
+}
+
+void OLED_display(String prompt) {
+  display.clearDisplay();
+  display.setCursor(0,0); 
+  display.println(prompt);
+  display.display();
 }
 
 void setup() {
@@ -754,17 +861,20 @@ void setup() {
   pinMode(12, INPUT_PULLUP);
   pinMode(13, INPUT_PULLUP);
   pinMode(15, INPUT_PULLUP);
+  
+  // fast i2c (400kHz)
+  Wire.begin(SDA, SCL, 400000);
 
-  if (!SD_MMC.begin("/sdcard", false)) {
+  OLED_init();
+
+  if (!SD_MMC.begin("/sdcard", ONE_BIT_MODE)) {
     Serial.println("CARD MOUNT FAILED");
+    OLED_display("CARD MOUNT FAILED");
     return;
   }
   else {
     Serial.println("card mounted");
   }
-
-  // fast i2c (400kHz)
-  Wire.begin(SDA, SCL, 400000);
 
   // initialize accelerometer
   Serial.println("Initializing I2C devices...");
@@ -780,12 +890,17 @@ void setup() {
   // initialize dataFile in write mode
   dataFile = SD_MMC.open("/datalog.dat", FILE_WRITE);
   if (!dataFile) {
-    Serial.println("Failed to open file");
+    Serial.println("Failed to modify files in SD card");
+    OLED_display("Failed to modify files in SD card");
   }
+
+  OLED_display("BIGAT v1.0");
+  delay(3000);
 
 reset:
   if (standby == true) {
     Serial.println("waiting for command packets...");
+    OLED_display("Waiting for command packets...");
     while (standby == true) {
       receivePacket();
     }
@@ -813,8 +928,7 @@ reset:
   //case 1:
   if (packet_t.command == 1) {
 
-    // Wait for valid GPS location
-    wait_for_GPS_location();
+    OLED_display("Setting up network...");
     
     if (packet_t.level < level) {
       level = packet_t.level + 1;
@@ -823,13 +937,24 @@ reset:
       sendPacket();
     }
 
-    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 2, NULL, 1);
+//    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, NULL, 1);
+//    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 2, NULL, 1);
+
+    // Probable fix. Check rTask, a delayMicroseconds() might be needed there 
+    // to not trigger a watchdog timer error.
+    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 0, NULL, 0);
+    delay(2000);
+    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, NULL, 0);
 
     unsigned long s = millis();
+    
     do {} while (millis() - s < relayModeTime);
 
     standby = true;
+
+    Serial.println("GPS");
+    // Wait for valid GPS location
+    wait_for_GPS_location();
 
     Serial.println("exiting... reset");
     goto reset;
@@ -841,7 +966,11 @@ reset:
     if (packet_t.level < level) {
       packet_t.level = level;
       sendPacket();
-  
+
+      OLED_display("Preparing for data gathering...");
+      delay(1000);
+      OLED_display("Getting background data...");
+      
       // Insert here getting background data of accelerometer
       // and saving it to SD card while getting average
       get_background_data();
@@ -849,38 +978,39 @@ reset:
       Serial.println("start data logger");
       tsave = millis();
 
-      Serial.println("1");
-
       logger = true;
 
-      xTaskCreatePinnedToCore(stopTask, "stop data logging", 8096, NULL, 1, NULL, 0);
+      xTaskCreatePinnedToCore(stopTask, "stop data logging", 1024, NULL, 0, &StopTask, 0);
 //      xTaskCreatePinnedToCore(dTask, "data log", 8096, NULL, 1, NULL, 1);
 
-      Serial.println("2");
-
+      OLED_display("Getting actual data...");
       // Preparation for data gathering
       preparing_datagathering(1);
       
       while (logger == true) {
-        Serial.print(":");
         if (sqw_count <= 0) {
-          sqw_count = 4;
+          sqw_count = samp_per;
           get_data();
         }
+        delayMicroseconds(keep_up);
       }
       
       vTaskDelay(1000 / portTICK_PERIOD_MS);
 
+      delay(5000);
       // Flushing data to temporary file
       dataFile.close();
 
-      // Relay time problem. Please solve this
-      xTaskCreatePinnedToCore(rPeakTask, "receive peak g packet", 1024, NULL, 1, NULL, 0);
-
+      OLED_display("Saving data...");
       // Saving gathered data into TXT file
       saving_data(1);
-
+      
       vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+      OLED_display("Transmiting and receiving peak data...");
+      
+      // Relay time problem. Please solve this
+      xTaskCreatePinnedToCore(rPeakTask, "receive peak g packet", 2048, NULL, 1, NULL, 0);
       xTaskCreatePinnedToCore(sPeakTask, "send peak g packet", 1024, NULL, 2, NULL, 1);
 
       unsigned long s = millis();

@@ -8,7 +8,7 @@
 #define LORA_MOSI 27    // GPIO27 -  SX1276 MOSI
 #define LORA_CS 18     // GPIO18 -   SX1276 CS
 #define LORA_RST 14   // GPIO14 -    SX1276 RST
-#define LORA_IRQ 26  // GPIO26 -     SX1276 IRQ (interrupt request)
+#define LORA_IRQ 26  // GPIO26 -     SX1276 IRQ (interrupt request)U
 
 typedef struct packet {
   byte key;                       //passkey
@@ -38,6 +38,7 @@ struct peakAccel {
   int16_t ay;
   int16_t az;
   int32_t mag;
+  double mag_calc;
 };
 
 struct peakAccel pgaData;
@@ -58,6 +59,7 @@ int16_t ax;
 int16_t ay;
 int16_t az;
 int32_t mag;
+double mag_calc;
 
 int serial_buf;
 
@@ -170,7 +172,7 @@ void stopLogging() {
       ay = pgaData.ay;
       az = pgaData.az;
       mag = pgaData.mag;
-      toSerial = "{id:" + String(id) + "," + "level:" + String(level) + "," + "path:" + path + "," + "lat:" + String(lat_) + "," + "lng:" + String(lng_) + "," + "alt:" + String(alt) + "," + "date:" + String(date_) + "," + "time:" + String(time_) + ","  + "ax:" + String(ax) + "," + "ay:" + String(ay) + "," + "az:" + String(az) + "," + "mag:" + String(mag) + "}";
+      toSerial = "{id:" + String(id) + "," + "level:" + String(level) + "," + "path:" + path + "," + "lat:" + String(lat_) + "," + "lng:" + String(lng_) + "," + "alt:" + String(alt) + "\n" + "date:" + String(date_) + "," + "time:" + String(time_) + "," + "mag:" + String(mag_calc,10) + "}";
       Serial.println(toSerial);
     }
   }
@@ -179,15 +181,15 @@ void stopLogging() {
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  delay(1000);
+  delay(2000);
   setupLora();
   Serial.println();
   Serial.println("****************************************");
   Serial.println("COMMANDS: ");
-  Serial.println("0: \t Test Node Connection");
-  Serial.println("1: \t Setup Network");
-  Serial.println("2: \t Start Data Gathering");
-  Serial.println("3: \t Stop Data Gathering");
+  Serial.println("1: \t Test Node Connection");
+  Serial.println("2: \t Setup Network");
+  Serial.println("3: \t Start Data Gathering");
+  Serial.println("4: \t Stop Data Gathering");
   Serial.println("****************************************");
   Serial.println();
   while (!Serial.available()) {};
@@ -195,38 +197,49 @@ void setup() {
 }
 
 void loop() {
-  if (serial_buf == 0) {
+  if (serial_buf == 1) {
     Serial.println("Testing node connection...");
     while (Serial.available() > 0) { Serial.read(); }
     do {
       getNodes(); } while (!Serial.available());
   }
-  if (serial_buf == 1) {
+  else if (serial_buf == 2) {
     Serial.println("Setting up network...");
     while (Serial.available() > 0) { Serial.read(); }
+    createCommandPacket(1, 0);
+    sendPacket();
     do {
-      createCommandPacket(1, 0);
-      sendPacket();
       setupNetwork();
     } while (!Serial.available());
   }
-  if (serial_buf == 2) {
+  else if (serial_buf == 3) {
     Serial.println("Starting data logging...");
     while (Serial.available() > 0) { Serial.read(); }
-    do {
-      createCommandPacket(2, 0);
-      sendPacket();
-    } while (!Serial.available());
+    createCommandPacket(2, 0);
+    sendPacket();
   }
-  if (serial_buf == 3) {
+  else if (serial_buf == 4) {
     Serial.println("Stopping data logging...");
     while (Serial.available() > 0) { Serial.read(); }
+    createCommandPacket(3, 0);
+    sendPacket();
     do {
-      createCommandPacket(3, 0);
-      sendPacket();
       stopLogging();
     } while (!Serial.available());
   }
-  if (Serial.available()) { serial_buf = Serial.parseInt(); }
-  while (Serial.available()) { Serial.read(); }
+  else {
+    Serial.println();
+    Serial.println("****************************************");
+    Serial.println("COMMANDS: ");
+    Serial.println("1: \t Test Node Connection");
+    Serial.println("2: \t Setup Network");
+    Serial.println("3: \t Start Data Gathering");
+    Serial.println("4: \t Stop Data Gathering");
+    Serial.println("****************************************");
+    Serial.println();
+  }
+  serial_buf = 10;
+  while (!Serial.available()) {};
+  serial_buf = Serial.parseInt();
+//  if (Serial.available()) { serial_buf = Serial.parseInt(); }
 }
