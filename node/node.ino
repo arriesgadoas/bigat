@@ -927,9 +927,8 @@ reset:
 
   //case 1:
   if (packet_t.command == 1) {
-
-    OLED_display("Setting up network...");
-    
+    String debug = "Setting up network..." + String(packet_t.level);
+    OLED_display(debug);
     if (packet_t.level < level) {
       level = packet_t.level + 1;
       packet_t.level = level;
@@ -942,9 +941,8 @@ reset:
 
     // Probable fix. Check rTask, a delayMicroseconds() might be needed there 
     // to not trigger a watchdog timer error.
-    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 0, NULL, 0);
-    delay(2000);
-    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(rTask, "receive packet", 1024, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(sTask, "send packet", 1024, NULL, 2, NULL, 1);
 
     unsigned long s = millis();
     
@@ -964,7 +962,7 @@ reset:
   if (packet_t.command == 2) {
 
     if (packet_t.level < level) {
-      packet_t.level = level;
+      packet_t.level = level+1;
       sendPacket();
 
       OLED_display("Preparing for data gathering...");
@@ -1010,7 +1008,7 @@ reset:
       OLED_display("Transmiting and receiving peak data...");
       
       // Relay time problem. Please solve this
-      xTaskCreatePinnedToCore(rPeakTask, "receive peak g packet", 2048, NULL, 1, NULL, 0);
+      xTaskCreatePinnedToCore(rPeakTask, "receive peak g packet", 2048, NULL, 1, NULL, 1);
       xTaskCreatePinnedToCore(sPeakTask, "send peak g packet", 1024, NULL, 2, NULL, 1);
 
       unsigned long s = millis();
