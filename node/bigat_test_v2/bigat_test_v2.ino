@@ -1,6 +1,8 @@
 #include <SD.h>
 
-const byte id = 3;
+const int id = 7;
+
+boolean debug = false;
 
 //libraries
 #include <LoRa.h>
@@ -66,10 +68,10 @@ void myPacket();                  //updates packet_t to contain id and level of 
 
 //packet structure definition
 typedef struct packet {
-  byte key;                       //passkey
-  byte command;                   //0,1,2, or 3
-  byte level;                     //level assigend to a node
-  byte id;                        //node id must be unique
+  int key;                       //passkey
+  int command;                   //0,1,2, or 3
+  int level;                     //level assigend to a node
+  int id;                        //node id must be unique
   int path[10];                  //track packet path[sorce_node id, 2nd_hop_node id, 3rd_hop_node id,...]
 };
 
@@ -99,7 +101,7 @@ struct background {
 
 struct peakAccel {
   byte key;
-  byte id;
+  int id;
   byte level;
   int path[10];
   double lat;                 // Latitude
@@ -123,15 +125,16 @@ int32_t current_mag;
 //static const BaseType_t core = 1;
 boolean standby = true;
 boolean logger = true;
-byte level = 100;
-byte airTime = 150;
-byte nodesN = 25;
+int level = 100;
+int airTime = 200;
+int nodesN = 50;
 unsigned long relayModeTime = nodesN * airTime;
 int rD; //= airTime*abs(random(0,nodesN));
+int pass_delay;
 //const byte id = 3;
 struct packet packet_t;
-byte key = 83;
-byte key2 = 84;
+int key = 83;
+int key2 = 84;
 
 unsigned long tsave;
 File dataFile;        // dataFile for temporary storage (binary)
@@ -179,18 +182,18 @@ const double accel_res = double(1000.0) / double(16384.0);
 
 //alternative relay mode implementation
 void relay() {
-  unsigned long start = millis();
+  Serial.println("entering relay mode");
   long pause_to_send = relayModeTime - rD;
+  unsigned long start = millis();
   do {
     //initialize standby to TRUE to enter relay mode
     standby = true;
-    if (standby == true) {
-      while (standby == true && millis() - start < pause_to_send) {
-        receivePacket();
-      }
+    while (standby == true && millis() - start < pause_to_send) {
+      receivePacket();
     }
+
     // Serial.println(String(packet_t.id));
-    if (packet_t.level > level) {
+    if (packet_t.level > level && packet_t.id != 0) {
       for (int i = 0; i < 10; i++) {
 
         if (packet_t.path[i] == id) {
@@ -200,32 +203,33 @@ void relay() {
 
         if (packet_t.path[i] == 0) {
           packet_t.path[i] = id;
+          packet_t.level = level;
           sendPacket();
           break;
         }
         if (i == 9) {
+          packet_t.level = level;
+          sendPacket();
           break;
         }
       }
-     // printPacket();
-      //sendPacket();
+      // printPacket();
     }
 
-    else{
+    else {
       Serial.println("ignore low level packets");
-      
       Serial.println(packet_t.id);
-      
-      }
+
+    }
 
   } while (millis() - start < pause_to_send);
 
-    myPacket(1);
-    Serial.println("Sending my own packet");
-    sendPacket();
+  myPacket(1);
+  Serial.println("Sending my own packet");
+  sendPacket();
   start = millis();
-  
-  do{
+
+  do {
     standby = true;
     if (standby == true) {
       while (standby == true && millis() - start < rD) {
@@ -243,71 +247,88 @@ void relay() {
 
         if (packet_t.path[i] == 0) {
           packet_t.path[i] = id;
+          packet_t.level = level;
           sendPacket();
           break;
         }
         if (i == 9) {
+          packet_t.level = level;
+          sendPacket();
           break;
         }
       }
       //printPacket();
       //sendPacket();
     }
-    else{
+    else {
       Serial.print("ignore low level packets: ");
       Serial.println(packet_t.id);
-      
-      }
 
-    }while(millis()- start < rD);
-  
+    }
+
+  } while (millis() - start < (rD));
+  Serial.println("realy mode time finished");
 }
 
-void relay_peak() {
-  unsigned long start = millis();
+void relayPeak() {
+  Serial.println("entering relay mode");
   long pause_to_send = relayModeTime - rD;
+  unsigned long start = millis();
   do {
     //initialize standby to TRUE to enter relay mode
     standby = true;
-    if (standby == true) {
-      while (standby == true && millis() - start < pause_to_send) {
-        receivePacket();
-      }
+    while (standby == true && millis() - start < pause_to_send) {
+      receivePeakPacket();
     }
+
     // Serial.println(String(pgaDataOtherNodes.id));
-    if (pgaDataOtherNodes.level > level) {
+    if (pgaDataOtherNodes.level > level && pgaDataOtherNodes.id != 0) {
       for (int i = 0; i < 10; i++) {
 
         if (pgaDataOtherNodes.path[i] == id) {
-          //Serial.println("ignore redundant packet");
+          Serial.println("ignore redundant packet");
           break;
         }
 
         if (pgaDataOtherNodes.path[i] == 0) {
           pgaDataOtherNodes.path[i] = id;
-          sendPacket();
+          pgaDataOtherNodes.level = level;
+          sendPeakPacket(pgaDataOtherNodes);
           break;
         }
         if (i == 9) {
+          pgaDataOtherNodes.level = level;
+          sendPeakPacket(pgaDataOtherNodes);
           break;
         }
       }
-      //printPacket();
-     // sendPacket();
+      // printPacket();
+    }
+
+    else {
+      Serial.println("ignore low level packets");
+      Serial.println(pgaDataOtherNodes.id);
+
     }
 
   } while (millis() - start < pause_to_send);
-
-    myPacket(1);
-    Serial.println("Sending my own packet");
-    sendPacket();
-  start = millis();
   
-  do{
+  for(int i=0; i<10; i++){
+      pgaData.path[i] = 0;
+    }
+  pgaData.path[0] = id;
+  pgaData.id = id;
+  pgaData.key = key2;
+  pgaData.level = level;
+  sendPeakPacket(pgaData);
+  
+  start = millis();
+
+  do {
     standby = true;
     if (standby == true) {
       while (standby == true && millis() - start < rD) {
-        receivePacket();
+        receivePeakPacket();
       }
     }
     // Serial.println(String(pgaDataOtherNodes.id));
@@ -321,19 +342,27 @@ void relay_peak() {
 
         if (pgaDataOtherNodes.path[i] == 0) {
           pgaDataOtherNodes.path[i] = id;
-          sendPacket();
+          pgaDataOtherNodes.level = level;
+          sendPeakPacket(pgaDataOtherNodes);
           break;
         }
         if (i == 9) {
+          pgaDataOtherNodes.level = level;
+          sendPeakPacket(pgaDataOtherNodes);
           break;
         }
       }
       //printPacket();
       //sendPacket();
     }
+    else {
+      Serial.print("ignore low level packets: ");
+      Serial.println(pgaDataOtherNodes.id);
 
-    }while(millis()- start < rD);
-  
+    }
+
+  } while (millis() - start < (rD));
+  Serial.println("realy mode time finished");
 }
 
 void stopTask(void *param) {
@@ -357,7 +386,7 @@ void stopTask(void *param) {
     //      }
     //    }
     receivePacket();
-    if (packet_t.level < level) {
+    if (packet_t.level < level && packet_t.id == 0) {
       if (packet_t.command == 3) {
         packet_t.level = level;
         sendPacket();
@@ -405,34 +434,42 @@ void setupLoRa() {
   }
 
   LoRa.setSpreadingFactor(7);
-  LoRa.setTxPower(2, PA_OUTPUT_PA_BOOST_PIN);
+  LoRa.setTxPower(20, PA_OUTPUT_PA_BOOST_PIN);
   Serial.println("Lora setup done.");
 }
 
 
 void receivePacket() {
   int packetSize = LoRa.parsePacket();
-  if (packetSize == 44) {
+  if (packetSize) {
     LoRa.readBytes((uint8_t*)&packet_t, packetSize);
+    delayMicroseconds(100);
     if (packet_t.key == key) {
-      Serial.println("received command packet");
+
+      Serial.print("received command packet:  ");
+      Serial.println(packet_t.command);
+      Serial.print("from id:  ");
+      Serial.println(packet_t.id);
       standby = false;
     }
 
     else {
+      LoRa.flush();
       Serial.println("invalid command packet");
       standby = true;
     }
   }
+
+
 }
 
 
 void receivePeakPacket() {
   int packetSize = LoRa.parsePacket();
-  
+
   if (packetSize) {
     LoRa.readBytes((uint8_t*)&pgaDataOtherNodes, packetSize);
-    
+    delayMicroseconds(100);
     if (pgaDataOtherNodes.key == key2) {
       Serial.println("received peak g packet");
       standby = false;
@@ -481,7 +518,9 @@ void sendPeakPacket(peakAccel s) {
 
 
 void myPacket(byte c) {
-
+  for (int i = 0; i < 10; i++) {
+    packet_t.path[i] = 0;
+  }
   packet_t.key = key;
   packet_t.command = c;
   packet_t.level = level;
@@ -975,13 +1014,19 @@ void setup() {
   OLED_display("BIGAT v1.0");
   delay(3000);
 
+  if(debug == false){
+    wait_for_GPS_location();
+  }
 reset:
   if (standby == true) {
+    LoRa.receive();
     Serial.println("waiting for command packets...");
     OLED_display("Waiting for command packets...");
-    while (standby == true) {
+    unsigned long timer = millis();
+    while (standby == true && millis() - timer < 10000) {
       receivePacket();
     }
+    goto reset;
   }
 
   //case 0:
@@ -1000,9 +1045,9 @@ reset:
         break;
       }
 
-      if (h == 9){
+      if (h == 9) {
         break;
-        }
+      }
     }
     standby = true;
     Serial.println("exiting... reset");
@@ -1014,27 +1059,26 @@ reset:
 
 
     if (packet_t.level < level && packet_t.id == 0) {
-      rD = airTime * abs(random(0, nodesN));
+      int temp = random(0, nodesN);
+      Serial.println(temp);
+      rD = airTime * temp;
+      Serial.println(rD);
       OLED_display("Setting up network...\n Waiting time: " + String(rD));
-      for (int i = 0; i < 10; i++) {
-        packet_t.path[i] = 0;
-      }
       level = packet_t.level + 1;
       packet_t.level = level;
-      packet_t.id = 0;
-      packet_t.path[0] = 0;
-      //delay(rD);
       sendPacket();
+      relay();
     }
-    
-    relay();
+
+
 
     standby = true;
 
     Serial.println("GPS");
     // Wait for valid GPS location
-    //Mwait_for_GPS_location();
-
+    
+    //wait_for_GPS_location();
+    
     Serial.println("exiting... reset");
     goto reset;
   }
@@ -1042,14 +1086,16 @@ reset:
   //case 2:
   if (packet_t.command == 2) {
 
-    if (packet_t.level < level) {
+    if (packet_t.level < level && packet_t.id == 0) {
       //packet_t.level = level+1;
       sendPacket();
-
+      OLED_display("Getting ready for data logging...");
+      delay(1000);
+      relay();
+      
       OLED_display("Preparing for data gathering...");
       delay(1000);
       OLED_display("Getting background data...");
-
       // Insert here getting background data of accelerometer
       // and saving it to SD card while getting average
       get_background_data();
@@ -1089,9 +1135,10 @@ reset:
       OLED_display("Transmiting and receiving peak data...");
 
       // Relay time problem. Please solve this
-     relay_peak();
+      relayPeak();
 
     }
+
     standby = true;
     goto reset;
   }
